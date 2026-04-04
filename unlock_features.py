@@ -52,6 +52,7 @@ DEF_FEATURES = {
         "map_e":                  "1",
         "dslite":                 "1",
         "map_e_ocn":              "1",
+        "cpe":                    "0", # def: 0  # CPE 3G/4G/5G modem
     },
     "wifi": {
         "wifi24":          "1",
@@ -104,6 +105,7 @@ DEF_FEATURES = {
         "game_port":         "0", # def: 0   # misc.features.game   # misc.wireless.wl_if_count=3
         "lan_lag":           "1",
         "telnet":            "0",
+        "wifi_optimize":     "0",
     },
     "hardware": {
         "usb":        "0",
@@ -170,45 +172,39 @@ with open(FN_lua, 'w', newline = '\n') as file:
 unlockf_patch = '''#!/bin/sh
 INST_FLAG_FN=/tmp/unlockf_patch.log
 
-[ -e "$INST_FLAG_FN" ] && return 0
+[ -f $INST_FLAG_FN ] && return 0
+[ -s $INST_FLAG_FN ] && return 0
+: > $INST_FLAG_FN
 
-DIR_PATCH=/etc/crontabs/patches
-DIR_BACKUP=$DIR_PATCH/unlockf_backup
-
+STOR_DIR=/etc/crontabs/patches/unlockf
 TARGET_DIR=/usr/lib/lua/xiaoqiang
-MIRROR_DIR=/tmp/_usr_lib_lua_xiaoqiang
-SYNCOBJECT=$MIRROR_DIR.sync
+TARGET_FN=XQFeatures.lua
+TARGET_FILENAME=$TARGET_DIR/$TARGET_FN
+TARGET_STOR_ORIG=$STOR_DIR/$TARGET_FN.orig
+TARGET_STOR_NEW=$STOR_DIR/$TARGET_FN
 
-if [ ! -f $DIR_PATCH/XQFeatures.lua ; then
-	return 0
+if mount | grep -q " on $TARGET_FILENAME " ; then
+    return 1
 fi
-
-for i in $(seq 1 45); do
-	mkdir $SYNCOBJECT &> /dev/null && break
-	sleep 1
-done
-if ! mount | grep -q " on $TARGET_DIR" ; then
-	mkdir -p $MIRROR_DIR
-	cp -rf $TARGET_DIR/* $MIRROR_DIR/
-	mount --bind $MIRROR_DIR $TARGET_DIR
+if [ ! -f $TARGET_FILENAME ]; then
+	return 1
 fi
-
-if [ ! -f $MIRROR_DIR/XQFeatures.lua ]; then
-    rm -rf $SYNCOBJECT
-    return 1  # error
+if [ ! -f $TARGET_STOR_NEW ]; then
+    return 1
 fi
-
-# replace XQFeatures.lua
-cp -f $DIR_PATCH/XQFeatures.lua $MIRROR_DIR/XQFeatures.lua
-
-rm -rf $SYNCOBJECT
+if [ ! -f $TARGET_STOR_ORIG ]; then
+    cp -f $TARGET_FILENAME $TARGET_STOR_ORIG 
+fi
+mount --bind $TARGET_STOR_NEW $TARGET_FILENAME
 
 ### patch misc config ###
 
 uci set misc.features.xmir_unlockf=1
 uci commit misc
 
-echo "unlockf enabled" > /tmp/unlockf_patch.log
+echo "unlockf enabled" > $INST_FLAG_FN
+
+/etc/init.d/rpcd reload
 '''
 misc_patch = ''
 for keyname, value in patched_features.items():
@@ -227,57 +223,58 @@ with open(FN_patch, 'w', newline = '\n') as file:
 unlockf_install = '''#!/bin/sh
 INST_FLAG_FN=/tmp/unlockf_patch.log
 
-DIR_PATCH=/etc/crontabs/patches
-DIR_BACKUP=$DIR_PATCH/unlockf_backup
-
+STOR_DIR=/etc/crontabs/patches/unlockf
 TARGET_DIR=/usr/lib/lua/xiaoqiang
-MIRROR_DIR=/tmp/_usr_lib_lua_xiaoqiang
-SYNCOBJECT=$MIRROR_DIR.sync
+TARGET_FN=XQFeatures.lua
+TARGET_FILENAME=$TARGET_DIR/$TARGET_FN
+TARGET_STOR_ORIG=$STOR_DIR/$TARGET_FN.orig
+TARGET_STOR_NEW=$STOR_DIR/$TARGET_FN
+STOR_BACKUP_DIR=$STOR_DIR/backup
 
-if [ ! -f /tmp/XQFeatures.lua ]; then
+if [ ! -f /tmp/$TARGET_FN ]; then
     return 1
 fi
-
-if [ ! -d $DIR_PATCH ]; then
-    mkdir -p $DIR_PATCH
-    chown root $DIR_PATCH
-    chmod 0755 $DIR_PATCH
+if [ ! -d $STOR_DIR ]; then
+    mkdir -p $STOR_DIR
+    chown root $STOR_DIR
+    chmod 0755 $STOR_DIR
 fi
 
-CLEAN_INSTALL=0
-if [ ! -d $DIR_BACKUP ]; then
-    CLEAN_INSTALL=1
-    mkdir -p $DIR_BACKUP
-    if [ -f $DIR_BACKUP/misc ]; then
-        cp -f /etc/config/misc $DIR_BACKUP/misc
-    fi
+FIRST_INSTALL=0
+if [ ! -d $STOR_BACKUP_DIR ]; then
+    FIRST_INSTALL=1
+    mkdir -p $STOR_BACKUP_DIR
+    [ -f /etc/config/misc ] && cp -f /etc/config/misc $STOR_BACKUP_DIR/misc
 fi
-if [ $CLEAN_INSTALL = 1 ]; then
-	NEED_RESTORE_MNT=0
-	if mount | grep -q " on $TARGET_DIR" ; then
-		umount -l $TARGET_DIR
-		NEED_RESTORE_MNT=1
-	fi
-	if [ ! -f $DIR_BACKUP/XQFeatures.lua ]; then
-        cp -f $TARGET_DIR/XQFeatures.lua $DIR_BACKUP/XQFeatures.lua
-    fi
-	[ $NEED_RESTORE_MNT = 1 ] && mount --bind $MIRROR_DIR $TARGET_DIR
-fi 
+if mount | grep -q " on $TARGET_DIR type tmpfs" ; then
+    umount -l $TARGET_DIR
+fi
+if mount | grep -q " on $TARGET_FILENAME " ; then
+    umount -l $TARGET_FILENAME
+fi
+if [ ! -f $TARGET_STOR_ORIG ]; then
+    cp -f $TARGET_FILENAME $TARGET_STOR_ORIG
+fi
+mv -f /tmp/$TARGET_FN $TARGET_STOR_NEW 
+mv -f /tmp/unlockf_patch.sh $STOR_DIR/
+chmod +x $STOR_DIR/unlockf_patch.sh
 
-mv -f /tmp/XQFeatures.lua $DIR_PATCH/
-mv -f /tmp/unlockf_patch.sh $DIR_PATCH/
-chmod +x $DIR_PATCH/unlockf_patch.sh
-
+FILE_CRON=/etc/crontabs/root
+if [ -f $FILE_CRON ]; then
+    grep -v "/unlockf_patch.sh" $FILE_CRON > $FILE_CRON.new || echo "" > $FILE_CRON.new
+    echo "*/1 * * * * $STOR_DIR/unlockf_patch.sh >/dev/null 2>&1" >> $FILE_CRON.new
+    mv $FILE_CRON.new $FILE_CRON
+fi
 uci set firewall.auto_unlockf_patch=include
 uci set firewall.auto_unlockf_patch.type='script'
-uci set firewall.auto_unlockf_patch.path="$DIR_PATCH/unlockf_patch.sh"
+uci set firewall.auto_unlockf_patch.path="$STOR_DIR/unlockf_patch.sh"
 uci set firewall.auto_unlockf_patch.enabled='1'
 uci commit firewall
 
 rm -f $INST_FLAG_FN
 
 # run patch
-$DIR_PATCH/unlockf_patch.sh
+$STOR_DIR/unlockf_patch.sh
 
 luci-reload
 rm -f /tmp/luci-indexcache
@@ -289,29 +286,39 @@ with open(FN_install, 'w', newline = '\n') as file:
 unlockf_uninstall = '''#!/bin/sh
 INST_FLAG_FN=/tmp/unlockf_patch.log
 
-DIR_PATCH=/etc/crontabs/patches
-DIR_BACKUP=$DIR_PATCH/unlockf_backup
-
+STOR_DIR=/etc/crontabs/patches/unlockf
 TARGET_DIR=/usr/lib/lua/xiaoqiang
-MIRROR_DIR=/tmp/_usr_lib_lua_xiaoqiang
-SYNCOBJECT=$MIRROR_DIR.sync
+TARGET_FN=XQFeatures.lua
+TARGET_FILENAME=$TARGET_DIR/$TARGET_FN
+TARGET_STOR_ORIG=$STOR_DIR/$TARGET_FN.orig
+TARGET_STOR_NEW=$STOR_DIR/$TARGET_FN
+STOR_BACKUP_DIR=$STOR_DIR/backup
 
-if [ -d $DIR_BACKUP ]; then
-    if [ -d $MIRROR_DIR ]; then
-        cp -f $DIR_BACKUP/XQFeatures.lua $MIRROR_DIR/XQFeatures.lua
-    fi
-    cp -f $DIR_BACKUP/misc /etc/config/misc
+if [ -d $STOR_BACKUP_DIR ]; then
+    [ -s $STOR_BACKUP_DIR/misc ] && cp -f $STOR_BACKUP_DIR/misc /etc/config/misc
 fi
-
-uci delete firewall.auto_unlockf_patch
-uci commit firewall
-
-rm -rf $DIR_BACKUP
-rm -f $DIR_PATCH/unlockf_patch.sh
-rm -f $DIR_PATCH/XQFeatures.lua
+FILE_CRON=/etc/crontabs/root
+if grep -q '/unlockf_patch.sh' $FILE_CRON ; then
+    grep -v "/unlockf_patch.sh" $FILE_CRON > $FILE_CRON.new
+    mv $FILE_CRON.new $FILE_CRON
+    /etc/init.d/cron restart
+fi
+if uci -q get firewall.auto_unlockf_patch ; then
+    uci delete firewall.auto_unlockf_patch
+    uci commit firewall
+fi
+if mount | grep -q " on $TARGET_DIR type tmpfs" ; then
+    umount -l $TARGET_DIR
+fi
+if mount | grep -q " on $TARGET_FILENAME " ; then
+    umount -l $TARGET_FILENAME
+fi
+rm -rf $STOR_BACKUP_DIR
+rm -f $STOR_DIR/unlockf_patch.sh
+rm -f $TARGET_STOR_NEW
 rm -f $INST_FLAG_FN
-rm -rf $SYNCOBJECT
 
+/etc/init.d/rpcd reload
 luci-reload
 rm -f /tmp/luci-indexcache
 luci-reload
